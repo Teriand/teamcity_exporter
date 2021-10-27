@@ -58,9 +58,9 @@ func init() {
 func main() {
 	var (
 		//showVersion   = flag.Bool("version", false, "Print version information")
-		listenAddress = flag.String("web.listen-address", ":9107", "Address to listen on for web interface and telemetry")
-		metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics")
-		configPath    = flag.String("config", "config.yaml", "Path to configuration file")
+		listenAddress = kingpin.Flag("web.listen-address", "Address to listen on for web interface and telemetry").Default(":9107").String()
+		metricsPath   = kingpin.Flag("web.telemetry-path",  "Path under which to expose metrics").Default("/metrics").String()
+		configPath    = kingpin.Flag("config", "Path to configuration file").Default("config.yaml").String()
 	)
 	//flag.Parse()
 	
@@ -72,8 +72,8 @@ func main() {
 	kingpin.Parse()
 	logger := promlog.New(promlogConfig)
 	
-	log.Infoln("Starting teamcity_exporter", version.Info())
-	log.Infoln("Build context", version.BuildContext())
+	level.Info(logger).Log("Starting teamcity_exporter", version.Info())
+	level.Info(logger).Log("Build context", version.BuildContext())
 
 	/*if *showVersion {
 		log.Infoln(os.Stdout, version.Print("teamcity_exporter"))
@@ -185,12 +185,13 @@ func getBuildStat(c *tc.Client, wg *sync.WaitGroup, chIn <-chan Build, chOut cha
 			defer wg1.Done()
 			s, err := c.GetBuildStat(i.Details.ID)
 			if err != nil {
-				log.Errorf("Failed to query build statistics for build %s: %v", i.Details.WebURL, err)
+				//log.Errorf("Failed to query build statistics for build %s: %v", i.Details.WebURL, err)
+				fmt.Printf("%q", err)
 				return
 			}
 			chOut <- BuildStatistics{Build: i, Stat: s}
 		}(i)
-	}
+	
 		title := fmt.Sprint(namespace, "_bild_info")
 	labels := []Label{
 		{"exporter_instance", i.Filter.instance},
@@ -228,7 +229,8 @@ func parseStat(wg *sync.WaitGroup, chIn <-chan BuildStatistics) {
 		for k := range i.Stat.Property {
 			value, err := strconv.ParseFloat(i.Stat.Property[k].Value, 64)
 			if err != nil {
-				log.Errorf("Failed to convert string '%s' to float: %v", i.Stat.Property[k].Value, err)
+				//log.Errorf("Failed to convert string '%s' to float: %v", i.Stat.Property[k].Value, err)
+				fmt.Printf("%q", err)
 				continue
 			}
 			metric := strings.SplitN(i.Stat.Property[k].Name, ":", 2)
