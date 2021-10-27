@@ -4,6 +4,7 @@ package pester
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -36,11 +37,12 @@ type Client struct {
 	Timeout       time.Duration
 
 	// pester specific
-	Concurrency int
-	MaxRetries  int
-	Backoff     BackoffStrategy
-	KeepLog     bool
-	LogHook     LogHook
+	Concurrency    int
+	MaxRetries     int
+	Backoff        BackoffStrategy
+	KeepLog        bool
+	LogHook        LogHook
+	ContextLogHook ContextLogHook
 
 	SuccessReqNum   int
 	SuccessRetryNum int
@@ -48,7 +50,8 @@ type Client struct {
 	wg *sync.WaitGroup
 
 	sync.Mutex
-	ErrLog []ErrEntry
+	ErrLog         []ErrEntry
+	RetryOnHTTP429 bool
 }
 
 // ErrEntry is used to provide the LogString() data and is populated
@@ -93,11 +96,12 @@ func init() {
 // New constructs a new DefaultClient with sensible default values
 func New() *Client {
 	return &Client{
-		Concurrency: DefaultClient.Concurrency,
-		MaxRetries:  DefaultClient.MaxRetries,
-		Backoff:     DefaultClient.Backoff,
-		ErrLog:      DefaultClient.ErrLog,
-		wg:          &sync.WaitGroup{},
+		Concurrency:    DefaultClient.Concurrency,
+		MaxRetries:     DefaultClient.MaxRetries,
+		Backoff:        DefaultClient.Backoff,
+		ErrLog:         DefaultClient.ErrLog,
+		wg:             &sync.WaitGroup{},
+		RetryOnHTTP429: false,
 	}
 }
 
@@ -112,6 +116,9 @@ func NewExtendedClient(hc *http.Client) *Client {
 // LogHook is used to log attempts as they happen. This function is never called,
 // however, if KeepLog is set to true.
 type LogHook func(e ErrEntry)
+
+// ContextLogHook does the same as LogHook but with passed Context
+type ContextLogHook func(ctx context.Context, e ErrEntry)
 
 // BackoffStrategy is used to determine how long a retry request should wait until attempted
 type BackoffStrategy func(retry int) time.Duration
@@ -277,27 +284,46 @@ func (c *Client) pester(p params) (*http.Response, error) {
 				}
 
 				// Early return if we have a valid result
-				// Only retry (ie, continue the loop) on 5xx status codes
-				if err == nil && resp.StatusCode < 500 {
+				// Only retry (ie, continue the loop) on 5xx status codes and 429
+
+				if err == nil && resp.StatusCode < 500 && (resp.StatusCode != 429 || (resp.StatusCode == 429 && !c.RetryOnHTTP429)) {
 					multiplexCh <- result{resp: resp, err: err, req: n, retry: i}
 					return
 				}
 
-				c.log(ErrEntry{
-					Time:    time.Now(),
-					Method:  p.method,
-					Verb:    p.verb,
-					URL:     p.url,
-					Request: n,
-					Retry:   i + 1, // would remove, but would break backward compatibility
-					Attempt: i,
-					Err:     err,
-				})
+				loggingContext := context.Background()
+				if p.req != nil {
+					loggingContext = p.req.Context()
+				}
+
+				c.log(
+					loggingContext,
+					ErrEntry{
+						Time:    time.Now(),
+						Method:  p.method,
+						Verb:    p.verb,
+						URL:     p.url,
+						Request: n,
+						Retry:   i + 1, // would remove, but would break backward compatibility
+						Attempt: i,
+						Err:     err,
+					})
 
 				// if it is the last iteration, grab the result (which is an error at this point)
 				if i == AttemptLimit {
 					multiplexCh <- result{resp: resp, err: err}
 					return
+				}
+
+				//If the request has been cancelled, skip retries
+				if p.req != nil {
+					ctx := p.req.Context()
+					select {
+					case <-ctx.Done():
+						multiplexCh <- result{resp: resp, err: ctx.Err()}
+						return
+					default:
+					}
 				}
 
 				// if we are retrying, we should close this response body to free the fd
@@ -373,11 +399,15 @@ func (c *Client) EmbedHTTPClient(hc *http.Client) {
 	c.hc = hc
 }
 
-func (c *Client) log(e ErrEntry) {
+func (c *Client) log(ctx context.Context, e ErrEntry) {
 	if c.KeepLog {
 		c.Lock()
 		defer c.Unlock()
 		c.ErrLog = append(c.ErrLog, e)
+	} else if c.ContextLogHook != nil {
+		// NOTE: There is a possibility that Log Printing hook slows it down.
+		// but the consumer can always do the Job in a go-routine.
+		c.ContextLogHook(ctx, e)
 	} else if c.LogHook != nil {
 		// NOTE: There is a possibility that Log Printing hook slows it down.
 		// but the consumer can always do the Job in a go-routine.
@@ -408,6 +438,11 @@ func (c *Client) Post(url string, bodyType string, body io.Reader) (resp *http.R
 // PostForm provides the same functionality as http.Client.PostForm
 func (c *Client) PostForm(url string, data url.Values) (resp *http.Response, err error) {
 	return c.pester(params{method: "PostForm", url: url, data: data, verb: "POST"})
+}
+
+// set RetryOnHTTP429 for clients,
+func (c *Client) SetRetryOnHTTP429(flag bool) {
+	c.RetryOnHTTP429 = flag
 }
 
 ////////////////////////////////////////
