@@ -24,3 +24,17 @@ instances:
   password: password
   scrape_interval: 80
   concurrency_limit: 10
+- name: test
+  url: https://test.net
+  username: login
+  password: password
+  scrape_interval: 600
+  concurrency_limit: 5
+  builds_filters:
+  - name: prod-filter1
+    filter:
+      #build_type: BillingCenter_Autobuild
+      #status: success
+      #running: false
+      #canceled: false
+      count: 10
