@@ -1,7 +1,7 @@
 package main
 
 import (
-	"flag"
+//	"flag"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -15,8 +15,15 @@ import (
 	tc "github.com/guidewire/teamcity-go-bindings"
 	"github.com/orcaman/concurrent-map"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/log"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/promlog"
+	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
+
+//	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 const (
@@ -50,37 +57,45 @@ func init() {
 
 func main() {
 	var (
-		showVersion   = flag.Bool("version", false, "Print version information")
+		//showVersion   = flag.Bool("version", false, "Print version information")
 		listenAddress = flag.String("web.listen-address", ":9107", "Address to listen on for web interface and telemetry")
 		metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics")
 		configPath    = flag.String("config", "config.yaml", "Path to configuration file")
 	)
-	flag.Parse()
-
+	//flag.Parse()
+	
+	promlogConfig := &promlog.Config{}
+	flag.AddFlags(kingpin.CommandLine, promlogConfig)
+	kingpin.Version("1.1.1")
+	kingpin.CommandLine.UsageWriter(os.Stdout)
+	kingpin.HelpFlag.Short('h')
+	kingpin.Parse()
+	logger := promlog.New(promlogConfig)
+	
 	log.Infoln("Starting teamcity_exporter", version.Info())
 	log.Infoln("Build context", version.BuildContext())
 
-	if *showVersion {
+	/*if *showVersion {
 		log.Infoln(os.Stdout, version.Print("teamcity_exporter"))
 		return
-	}
+	}*/
 
 	collector := NewCollector()
 	prometheus.MustRegister(collector)
 
 	config := Configuration{}
 	if err := config.parseConfig(*configPath); err != nil {
-		log.Fatalf("Failed to parse configuration file: %v", err)
+		level.Error(logger).Log("Failed to parse configuration file: %v", err)
 	}
 	if err := config.validateConfig(); err != nil {
-		log.Fatalf("Failed to validate configuration: %v", err)
+		level.Error(logger).Log("Failed to validate configuration: %v", err)
 	}
 
 	for i := range config.Instances {
 		go config.Instances[i].collectStat()
 	}
 
-	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
 					 <head><title>Teamcity Exporter</title></head>
@@ -90,8 +105,8 @@ func main() {
 					 </body>
 					 </html>`))
 	})
-	log.Infoln("Listening on", *listenAddress)
-	log.Fatalln(http.ListenAndServe(*listenAddress, nil))
+	level.Info(logger).Log("Listening on", *listenAddress)
+	level.Error(logger).Log(http.ListenAndServe(*listenAddress, nil))
 }
 
 func (i *Instance) collectStat() {
@@ -101,7 +116,8 @@ func (i *Instance) collectStat() {
 	for _ = range ticker.c {
 		err := i.validateStatus(client)
 		if err != nil {
-			log.Error(err)
+			//log.Error(err)
+			fmt.Printf("%q", err)
 			continue
 		}
 		go i.collectStatHandler(client)
@@ -128,7 +144,7 @@ func (i *Instance) collectStatHandler(client *tc.Client) {
 				f.instance = i.Name
 				builds, err := client.GetLatestBuild(f.Filter)
 				if err != nil {
-					log.Error(err)
+					fmt.Printf("%q", err)
 					return
 				}
 				for i := range builds.Builds {
@@ -143,7 +159,7 @@ func (i *Instance) collectStatHandler(client *tc.Client) {
 			f := BuildFilter{instance: i.Name, Name: "<default>"}
 			builds, err := client.GetLatestBuild(f.Filter)
 			if err != nil {
-				log.Error(err)
+				fmt.Printf("%q", err)
 				return
 			}
 			for i := range builds.Builds {
@@ -175,6 +191,32 @@ func getBuildStat(c *tc.Client, wg *sync.WaitGroup, chIn <-chan Build, chOut cha
 			chOut <- BuildStatistics{Build: i, Stat: s}
 		}(i)
 	}
+		title := fmt.Sprint(namespace, "_bild_info")
+	labels := []Label{
+		{"exporter_instance", i.Filter.instance},
+		{"exporter_filter", i.Filter.Name},
+		{"build_configuration", string(i.Details.BuildTypeID)},
+		{"branch", i.Details.BranchName},
+		{"id", string(strconv.Itoa(int(i.Details.ID)))},
+		{"number", i.Details.Number},
+//		{"status", i.Details.Status},
+		{"state", i.Details.State},
+		{"url", i.Details.WebURL},
+		}
+	labelsTitles, labelsValues := []string{}, []string{}
+	for v := range labels {
+		labelsTitles = append(labelsTitles, labels[v].Name)
+		labelsValues = append(labelsValues, labels[v].Value)
+	}
+	var v float64 = 0.0
+	if (i.Details.Status == "SUCCESS") {
+		v = 1.0
+	}else if (i.Details.Status == "FAILURE") {
+		v = 3.0
+	}
+	desc := prometheus.NewDesc(title, title, labelsTitles, nil)
+	metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+	}
 	wg1.Wait()
 	close(chOut)
 }
@@ -197,6 +239,11 @@ func parseStat(wg *sync.WaitGroup, chIn <-chan BuildStatistics) {
 				{"exporter_filter", i.Build.Filter.Name},
 				{"build_configuration", string(i.Build.Details.BuildTypeID)},
 				{"branch", i.Build.Details.BranchName},
+				{"id", string(strconv.Itoa(int(i.Build.Details.ID)))},
+				{"number", i.Build.Details.Number},
+//				{"status", i.Build.Details.Status},
+				{"state", i.Build.Details.State},
+				{"url", i.Build.Details.WebURL},
 			}
 			if len(metric) > 1 {
 				labels = append(labels, Label{"other", metric[1]})
