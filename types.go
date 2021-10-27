@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	tc "github.com/guidewire/teamcity-go-bindings"
+	tc "github.com/teriand/teamcity-go-bindings"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

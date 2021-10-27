@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	tc "github.com/guidewire/teamcity-go-bindings"
+	tc "github.com/teriand/teamcity-go-bindings"
 	"github.com/orcaman/concurrent-map"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
