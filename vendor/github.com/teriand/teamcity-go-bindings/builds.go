@@ -41,7 +41,7 @@ func (c *Client) GetBuildsByParams(bl BuildLocator) (Builds, error) {
 	builds := Builds{}
 
 	url := fmt.Sprint(c.URL, "/app/rest/builds/?locator=", convertLocatorToString(bl))
-
+	log.Println("TC GetBuildsByParams url %s",url)
 	for {
 		buildsIter := Builds{}
 		chData := DataFlow{
@@ -50,6 +50,7 @@ func (c *Client) GetBuildsByParams(bl BuildLocator) (Builds, error) {
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
+			log.Println("TC GetBuildsByParams %q",err)
 			return builds, err
 		}
 
@@ -60,6 +61,7 @@ func (c *Client) GetBuildsByParams(bl BuildLocator) (Builds, error) {
 			body, err := processResponse(res)
 			defer res.Body.Close()
 			if err != nil {
+				log.Println("TC GetBuildsByParams %q",err)
 				return builds, err
 			}
 			if err := json.Unmarshal(body, &buildsIter); err != nil {
@@ -92,6 +94,7 @@ func (c *Client) GetBuildStat(id BuildID) (BuildStatistics, error) {
 	url := fmt.Sprint(c.URL, "/app/rest/builds/id:", id, "/statistics")
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
+		log.Println("TC GetBuildStat %q",err)
 		return stat, err
 	}
 
@@ -102,14 +105,37 @@ func (c *Client) GetBuildStat(id BuildID) (BuildStatistics, error) {
 		body, err := processResponse(res)
 		defer res.Body.Close()
 		if err != nil {
+			log.Println("TC GetBuildStat %q",err)
 			return stat, err
 		}
 		if err := json.Unmarshal(body, &stat); err != nil {
+			log.Println("TC GetBuildStat %q",err)
 			return stat, err
 		}
 	}
 
 	return stat, nil
+}
+
+
+func (c *Client) getBuildsByParamsPipelinedNew(f BuildLocator, out chan<- Build) {
+	build, err := c.GetBuildsByParams(f)
+	if err != nil {
+		log.Println("TC getBuildsByParamsPipelinedNew %q",err)
+		return
+	}
+	if len(build.Builds) > 0 {
+		log.Printf("TC getBuildsByParamsPipelinedNew Builds.Count: %d , buildType%s ", len(build.Builds), f.BuildType)
+		for i := range build.Builds {
+			log.Printf("TC Build: %s", build.Builds[i] )
+			out <- build.Builds[i]
+		}
+	} else {
+		log.Printf("+No builds found for build configuration '%s', branch '%s'", f.BuildType, f.Branch)
+		return
+	}
+	
+	close(out)
 }
 
 func (c *Client) getBuildsByParamsPipelined(in <-chan BuildLocator, out chan<- Build) {
@@ -134,7 +160,38 @@ func (c *Client) getBuildsByParamsPipelined(in <-chan BuildLocator, out chan<- B
 	wg.Wait()
 	close(out)
 }
+func (c *Client) GetLatestBuildNew(bl BuildLocator) (Builds, error) {
+	f := BuildLocator{
+		//BuildType: bt,
+		//Branch:    branch.Name,
+		Status:    bl.Status,
+		Running:   bl.Running,
+		//Canceled:  bl.Canceled,
+		SinceDate:  bl.SinceDate,
+		Count:     bl.Count,
+	}
+	chBuilds := make(chan Build)
+	builds := Builds{}
+	log.Printf("TC GetLatestBuildNew+" )
+	go c.getBuildsByParamsPipelinedNew(f, chBuilds)
+	log.Printf("TC GetLatestBuildNew++" )
+	wg1 := new(sync.WaitGroup)
+	wg1.Add(1)
+	go func() {
+		defer wg1.Done()
+		for build := range chBuilds {
+			builds.Builds = append(builds.Builds, build)
+			log.Printf("TC GetLatestBuildNew+append" )
+		}
+	}()
 
+
+	
+	//close(chFilters)
+
+	wg1.Wait()
+	return builds, nil
+}
 func (c *Client) GetLatestBuild(bl BuildLocator) (Builds, error) {
 	chFilters := make(chan BuildLocator)
 	chBuilds := make(chan Build)
@@ -185,7 +242,7 @@ func (c *Client) GetLatestBuild(bl BuildLocator) (Builds, error) {
 						Branch:    branch.Name,
 						Status:    bl.Status,
 						Running:   bl.Running,
-						Canceled:  bl.Canceled,
+						//Canceled:  bl.Canceled,
 						Count:     bl.Count,
 					}
 					chFilters <- f
@@ -204,7 +261,7 @@ func (c *Client) GetLatestBuild(bl BuildLocator) (Builds, error) {
 					Branch:    bl.Branch,
 					Status:    bl.Status,
 					Running:   bl.Running,
-					Canceled:  bl.Canceled,
+					//Canceled:  bl.Canceled,
 					Count:     bl.Count,
 				}
 				chFilters <- f
