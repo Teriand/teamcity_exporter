@@ -124,7 +124,9 @@ func (i *Instance) collectStatHandlerNew(client *tc.Client) {
 	startProcessing := time.Now()
 	
 	chBuilds := make(chan Build)
-	
+	wg1 := new(sync.WaitGroup)
+	wg1.Add(1)
+	go getBuildStatNew(wg1, chBuilds)
 	
 	wg2 := new(sync.WaitGroup)
 	if len(i.BuildsFilters) != 0 {
@@ -151,6 +153,7 @@ func (i *Instance) collectStatHandlerNew(client *tc.Client) {
 	}
 	wg2.Wait()
 	close(chBuilds)
+	wg1.Wait()
 	finishProcessing := time.Now()
 	metricsStorage.Set(getHash(instanceLastScrapeFinishTime.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeFinishTime, prometheus.GaugeValue, float64(finishProcessing.Unix()), i.Name))
 	metricsStorage.Set(getHash(instanceLastScrapeDuration.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeDuration, prometheus.GaugeValue, time.Since(startProcessing).Seconds(), i.Name))
