@@ -115,6 +115,7 @@ func (i *Instance) collectStat() {
 			fmt.Printf("collectStat %q", err)
 			continue
 		}
+		metricsStorage.Clear()
 		go i.collectStatHandlerNew(client)
 		//go i.collectStatHandler(client)
 	}
@@ -205,7 +206,36 @@ func (i *Instance) collectStatHandler(client *tc.Client) {
 	metricsStorage.Set(getHash(instanceLastScrapeFinishTime.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeFinishTime, prometheus.GaugeValue, float64(finishProcessing.Unix()), i.Name))
 	metricsStorage.Set(getHash(instanceLastScrapeDuration.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeDuration, prometheus.GaugeValue, time.Since(startProcessing).Seconds(), i.Name))
 }
-
+func getBuildStatNew(wg *sync.WaitGroup, chIn <-chan Build) {
+	defer wg.Done()
+	for i := range chIn {
+		title := fmt.Sprint(namespace, "_build_info")
+	labels := []Label{
+		{"exporter_instance", i.Filter.instance},
+		{"exporter_filter", i.Filter.Name},
+		{"build_configuration", string(i.Details.BuildTypeID)},
+		{"branch", i.Details.BranchName},
+		{"id", string(strconv.Itoa(int(i.Details.ID)))},
+		{"number", i.Details.Number},
+//		{"status", i.Details.Status},
+		{"state", i.Details.State},
+		{"url", i.Details.WebURL},
+		}
+	labelsTitles, labelsValues := []string{}, []string{}
+	for v := range labels {
+		labelsTitles = append(labelsTitles, labels[v].Name)
+		labelsValues = append(labelsValues, labels[v].Value)
+	}
+	var v float64 = 0.0
+	if (i.Details.Status == "SUCCESS") {
+		v = 1.0
+	}else if (i.Details.Status == "FAILURE") {
+		v = 3.0
+	}
+	desc := prometheus.NewDesc(title, title, labelsTitles, nil)
+	metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+	}
+}
 func getBuildStat(c *tc.Client, wg *sync.WaitGroup, chIn <-chan Build, chOut chan<- BuildStatistics) {
 	defer wg.Done()
 	wg1 := &sync.WaitGroup{}
