@@ -75,11 +75,6 @@ func main() {
 	level.Info(logger).Log("Starting teamcity_exporter", version.Info())
 	level.Info(logger).Log("Build context", version.BuildContext())
 
-	/*if *showVersion {
-		log.Infoln(os.Stdout, version.Print("teamcity_exporter"))
-		return
-	}*/
-
 	collector := NewCollector()
 	prometheus.MustRegister(collector)
 
@@ -117,13 +112,48 @@ func (i *Instance) collectStat() {
 		err := i.validateStatus(client)
 		if err != nil {
 			//log.Error(err)
-			fmt.Printf("%q", err)
+			fmt.Printf("collectStat %q", err)
 			continue
 		}
-		go i.collectStatHandler(client)
+		go i.collectStatHandlerNew(client)
+		//go i.collectStatHandler(client)
 	}
 }
-
+func (i *Instance) collectStatHandlerNew(client *tc.Client) {
+	startProcessing := time.Now()
+	
+	chBuilds := make(chan Build)
+	
+	
+	wg2 := new(sync.WaitGroup)
+	if len(i.BuildsFilters) != 0 {
+		for _, bf := range i.BuildsFilters {
+			wg2.Add(1)
+			go func(f BuildFilter) {
+				defer wg2.Done()
+				f.instance = i.Name
+				//tmp,_ := strconv.Atoi(f.Filter.SinceDate)
+				currentTime := time.Now()
+				adjustTime := currentTime.Add(-time.Second * time.Duration(i.ScrapeInterval))
+				f.Filter.SinceDate = fmt.Sprintf("%s%%2b0300",adjustTime.Format("20060102T150405"))
+				fmt.Printf("collectStatHandlerNew %s", f.Filter.SinceDate)
+				builds, err := client.GetLatestBuildNew(f.Filter)
+				if err != nil {
+					fmt.Printf("collectStatHandlerNew %q", err)
+					return
+				}
+				for i := range builds.Builds {
+					chBuilds <- Build{Details: builds.Builds[i], Filter: f}
+				}
+			}(bf)
+		}
+	}
+	wg2.Wait()
+	close(chBuilds)
+	finishProcessing := time.Now()
+	metricsStorage.Set(getHash(instanceLastScrapeFinishTime.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeFinishTime, prometheus.GaugeValue, float64(finishProcessing.Unix()), i.Name))
+	metricsStorage.Set(getHash(instanceLastScrapeDuration.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeDuration, prometheus.GaugeValue, time.Since(startProcessing).Seconds(), i.Name))
+}
 func (i *Instance) collectStatHandler(client *tc.Client) {
 	startProcessing := time.Now()
 
@@ -144,7 +174,7 @@ func (i *Instance) collectStatHandler(client *tc.Client) {
 				f.instance = i.Name
 				builds, err := client.GetLatestBuild(f.Filter)
 				if err != nil {
-					fmt.Printf("%q", err)
+					fmt.Printf("collectStatHandler %q", err)
 					return
 				}
 				for i := range builds.Builds {
@@ -159,7 +189,7 @@ func (i *Instance) collectStatHandler(client *tc.Client) {
 			f := BuildFilter{instance: i.Name, Name: "<default>"}
 			builds, err := client.GetLatestBuild(f.Filter)
 			if err != nil {
-				fmt.Printf("%q", err)
+				fmt.Printf("collectStatHandler %q", err)
 				return
 			}
 			for i := range builds.Builds {
@@ -186,13 +216,13 @@ func getBuildStat(c *tc.Client, wg *sync.WaitGroup, chIn <-chan Build, chOut cha
 			s, err := c.GetBuildStat(i.Details.ID)
 			if err != nil {
 				//log.Errorf("Failed to query build statistics for build %s: %v", i.Details.WebURL, err)
-				fmt.Printf("%q", err)
+				fmt.Printf("getBuildStat %q", err)
 				return
 			}
 			chOut <- BuildStatistics{Build: i, Stat: s}
 		}(i)
 	
-		title := fmt.Sprint(namespace, "_bild_info")
+		title := fmt.Sprint(namespace, "_build_info")
 	labels := []Label{
 		{"exporter_instance", i.Filter.instance},
 		{"exporter_filter", i.Filter.Name},
@@ -271,14 +301,23 @@ func (i *Instance) validateStatus(client *tc.Client) error {
 	}
 
 	resp, err := client.HTTPClient.Do(req)
-	if resp.StatusCode == 401 {
-		req.SetBasicAuth(i.Username, i.Password)
-		resp, err = client.HTTPClient.Do(req)
-	}
+	defer resp.Body.Close()
 	if err != nil {
 		metricsStorage.Set(getHash(instanceStatus.String(), i.Name), prometheus.MustNewConstMetric(instanceStatus, prometheus.GaugeValue, 0, i.Name))
 		return err
 	}
+
+	if resp.StatusCode == 401 {
+		req.SetBasicAuth(i.Username, i.Password)
+		resp, err = client.HTTPClient.Do(req)
+	}
+	defer resp.Body.Close()
+
+	if err != nil {
+		metricsStorage.Set(getHash(instanceStatus.String(), i.Name), prometheus.MustNewConstMetric(instanceStatus, prometheus.GaugeValue, 0, i.Name))
+		return err
+	}
+
 	if resp.StatusCode == 401 {
 		metricsStorage.Set(getHash(instanceStatus.String(), i.Name), prometheus.MustNewConstMetric(instanceStatus, prometheus.GaugeValue, 0, i.Name))
 		return fmt.Errorf("Unauthorized instance '%s'", i.Name)
