@@ -2,19 +2,27 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
+//	"io/ioutil"
+	"os"
 	"regexp"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 func (c *Configuration) parseConfig(path string) error {
-	file, err := ioutil.ReadFile(path)
+	
+	yamlReader, err := os.Open(path)
 	if err != nil {
-		return err
+	fmt.Errorf("parseConfig %q", err)
+	return  err
 	}
-	err = yaml.Unmarshal(file, c)
-	return err
+	defer yamlReader.Close()
+	decoder := yaml.NewDecoder(yamlReader)
+	decoder.KnownFields(true)
+	
+	err = decoder.Decode(&c)
+	fmt.Errorf("parseConfig %q", err)
+	return  err
 }
 
 func (c *Configuration) validateConfig() error {

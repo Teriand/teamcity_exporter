@@ -19,7 +19,9 @@ func (col *Collector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (col *Collector) Collect(ch chan<- prometheus.Metric) {
+
 	for i := range metricsStorage.IterBuffered() {
 		ch <- i.Val.(prometheus.Metric)
 	}
+
 }

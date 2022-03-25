@@ -8,7 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
+//	"strings"
 	"sync"
 	"time"
 
@@ -66,24 +66,24 @@ func main() {
 	
 	promlogConfig := &promlog.Config{}
 	flag.AddFlags(kingpin.CommandLine, promlogConfig)
-	kingpin.Version("1.1.1")
+	kingpin.Version(version.Print("teamcity_exporter"))
 	kingpin.CommandLine.UsageWriter(os.Stdout)
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 	logger := promlog.New(promlogConfig)
 	
-	level.Info(logger).Log("Starting teamcity_exporter", version.Info())
-	level.Info(logger).Log("Build context", version.BuildContext())
+	level.Info(logger).Log("msg","Starting teamcity_exporter", "version", version.Info())
+	level.Info(logger).Log("msg","Build context", "build_cotext", version.BuildContext())
 
 	collector := NewCollector()
 	prometheus.MustRegister(collector)
 
 	config := Configuration{}
 	if err := config.parseConfig(*configPath); err != nil {
-		level.Error(logger).Log("Failed to parse configuration file: %v", err)
+		level.Error(logger).Log("msg","Failed to parse configuration file: %v", err)
 	}
 	if err := config.validateConfig(); err != nil {
-		level.Error(logger).Log("Failed to validate configuration: %v", err)
+		level.Error(logger).Log("msg","Failed to validate configuration: %v", err)
 	}
 
 	for i := range config.Instances {
@@ -100,7 +100,7 @@ func main() {
 					 </body>
 					 </html>`))
 	})
-	level.Info(logger).Log("Listening on", *listenAddress)
+	level.Info(logger).Log("msg","Listening on", "address", *listenAddress)
 	level.Error(logger).Log(http.ListenAndServe(*listenAddress, nil))
 }
 
@@ -124,10 +124,14 @@ func (i *Instance) collectStatHandlerNew(client *tc.Client) {
 	startProcessing := time.Now()
 	
 	chBuilds := make(chan Build)
+	chBuilds2 := make(chan Build)
+	chBuilds3 := make(chan Build)
 	wg1 := new(sync.WaitGroup)
-	wg1.Add(1)
+	wg1.Add(3)
 	go getBuildStatNew(wg1, chBuilds)
-	
+	go getBuildStatNew2(wg1, chBuilds2)
+	go getBuildStatNew3(wg1, chBuilds3)
+
 	wg2 := new(sync.WaitGroup)
 	if len(i.BuildsFilters) != 0 {
 		for _, bf := range i.BuildsFilters {
@@ -135,110 +139,199 @@ func (i *Instance) collectStatHandlerNew(client *tc.Client) {
 			go func(f BuildFilter) {
 				defer wg2.Done()
 				f.instance = i.Name
-				//tmp,_ := strconv.Atoi(f.Filter.SinceDate)
 				currentTime := time.Now()
 				adjustTime := currentTime.Add(-time.Second * time.Duration(i.ScrapeInterval))
-				f.Filter.SinceDate = fmt.Sprintf("%s%%2b0300",adjustTime.Format("20060102T150405"))
-				fmt.Printf("collectStatHandlerNew %s", f.Filter.SinceDate)
-				builds, err := client.GetLatestBuildNew(f.Filter)
+				//f.Filter.SinceDate = fmt.Sprintf("%s%%2b0300",adjustTime.Format("20060102T150405"))
+				f.Filter.FinishDate = fmt.Sprintf("date:%s%%2b0300,condition:after",adjustTime.Format("20060102T150405"))
+				//fmt.Printf("collectStatHandlerNew1 FinishDate %s\n", f.Filter.FinishDate)
+				//поиск билдов по финиш дейту, все статусы
+				builds, err := client.GetLatestBuildNew(f.Filter,bf.Fields)
 				if err != nil {
-					fmt.Printf("collectStatHandlerNew %q", err)
+					fmt.Printf("collectStatHandlerNew1 %q", err)
 					return
 				}
+				
 				for i := range builds.Builds {
 					chBuilds <- Build{Details: builds.Builds[i], Filter: f}
 				}
 			}(bf)
 		}
-	}
-	wg2.Wait()
-	close(chBuilds)
-	wg1.Wait()
-	finishProcessing := time.Now()
-	metricsStorage.Set(getHash(instanceLastScrapeFinishTime.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeFinishTime, prometheus.GaugeValue, float64(finishProcessing.Unix()), i.Name))
-	metricsStorage.Set(getHash(instanceLastScrapeDuration.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeDuration, prometheus.GaugeValue, time.Since(startProcessing).Seconds(), i.Name))
-}
-func (i *Instance) collectStatHandler(client *tc.Client) {
-	startProcessing := time.Now()
-
-	chBuilds := make(chan Build)
-	chBuildsStat := make(chan BuildStatistics)
-
-	wg1 := new(sync.WaitGroup)
-	wg1.Add(2)
-	go parseStat(wg1, chBuildsStat)
-	go getBuildStat(client, wg1, chBuilds, chBuildsStat)
-
-	wg2 := new(sync.WaitGroup)
-	if len(i.BuildsFilters) != 0 {
 		for _, bf := range i.BuildsFilters {
 			wg2.Add(1)
 			go func(f BuildFilter) {
 				defer wg2.Done()
 				f.instance = i.Name
-				builds, err := client.GetLatestBuild(f.Filter)
+				f.Filter.State = "queued"
+				currentTime := time.Now()
+				adjustTime := currentTime.Add(-time.Second * time.Duration(i.ScrapeInterval))
+				f.Filter.QueuedDate = fmt.Sprintf("date:%s%%2b0300,condition:after",adjustTime.Format("20060102T150405"))
+				//fmt.Printf("collectStatHandlerNew1 QueuedDate %s\n", f.Filter.QueuedDate)
+				//поиск билдов в очереди
+				builds, err := client.GetLatestBuildNew(f.Filter,bf.Fields)
 				if err != nil {
-					fmt.Printf("collectStatHandler %q", err)
+					fmt.Printf("collectStatHandlerNew1 %q", err)
 					return
 				}
+				
 				for i := range builds.Builds {
-					chBuilds <- Build{Details: builds.Builds[i], Filter: f}
+					chBuilds2 <- Build{Details: builds.Builds[i], Filter: f}
 				}
 			}(bf)
 		}
-	} else {
-		wg2.Add(1)
-		go func() {
-			defer wg2.Done()
-			f := BuildFilter{instance: i.Name, Name: "<default>"}
-			builds, err := client.GetLatestBuild(f.Filter)
-			if err != nil {
-				fmt.Printf("collectStatHandler %q", err)
-				return
-			}
-			for i := range builds.Builds {
-				chBuilds <- Build{Details: builds.Builds[i], Filter: f}
-			}
-		}()
+		for _, bf := range i.BuildsFilters {
+			wg2.Add(1)
+			go func(f BuildFilter) {
+				defer wg2.Done()
+				f.instance = i.Name
+				f.Filter.Running = "true"
+				currentTime := time.Now()
+				adjustTime := currentTime.Add(-time.Second * time.Duration(i.ScrapeInterval))
+				//f.Filter.StartDate = fmt.Sprintf("%s%%2b0300",adjustTime.Format("20060102T150405"))
+				f.Filter.StartDate = fmt.Sprintf("date:%s%%2b0300,condition:after",adjustTime.Format("20060102T150405"))
+				//f.Filter.FinishDate = fmt.Sprintf("date:%s%%2b0300,condition:after",adjustTime.Format("20060102T150405"))
+				//fmt.Printf("collectStatHandlerNew1 FinishDate %s\n", f.Filter.FinishDate)
+                //поиск работающих билдов
+				builds, err := client.GetLatestBuildNew(f.Filter,bf.Fields)
+				if err != nil {
+					fmt.Printf("collectStatHandlerNew1 %q", err)
+					return
+				}
+
+				for i := range builds.Builds {
+					chBuilds3 <- Build{Details: builds.Builds[i], Filter: f}
+				}
+			}(bf)
+		}
 	}
 	wg2.Wait()
 	close(chBuilds)
-
 	wg1.Wait()
 	finishProcessing := time.Now()
 	metricsStorage.Set(getHash(instanceLastScrapeFinishTime.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeFinishTime, prometheus.GaugeValue, float64(finishProcessing.Unix()), i.Name))
 	metricsStorage.Set(getHash(instanceLastScrapeDuration.String(), i.Name), prometheus.MustNewConstMetric(instanceLastScrapeDuration, prometheus.GaugeValue, time.Since(startProcessing).Seconds(), i.Name))
 }
+
 func getBuildStatNew(wg *sync.WaitGroup, chIn <-chan Build) {
 	defer wg.Done()
+	labels := []Label{}
 	for i := range chIn {
-		title := fmt.Sprint(namespace, "_build_info")
-	labels := []Label{
-		{"exporter_instance", i.Filter.instance},
-		{"exporter_filter", i.Filter.Name},
-		{"build_configuration", string(i.Details.BuildTypeID)},
-		{"branch", i.Details.BranchName},
-		{"id", string(strconv.Itoa(int(i.Details.ID)))},
-		{"number", i.Details.Number},
-//		{"status", i.Details.Status},
-		{"state", i.Details.State},
-		{"url", i.Details.WebURL},
-		}
-	labelsTitles, labelsValues := []string{}, []string{}
-	for v := range labels {
-		labelsTitles = append(labelsTitles, labels[v].Name)
-		labelsValues = append(labelsValues, labels[v].Value)
-	}
-	var v float64 = 0.0
-	if (i.Details.Status == "SUCCESS") {
-		v = 1.0
-	}else if (i.Details.Status == "FAILURE") {
-		v = 3.0
-	}
-	desc := prometheus.NewDesc(title, title, labelsTitles, nil)
-	metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+
+	    labels = []Label{
+		    {"exporter_instance", i.Filter.instance},
+		    {"exporter_filter", i.Filter.Name},
+		    {"build_configuration", string(i.Details.BuildTypeID)},
+		    {"branch", i.Details.BranchName},
+		    {"id", string(strconv.Itoa(int(i.Details.ID)))},
+		    {"number", i.Details.Number},
+		    {"status", i.Details.Status},
+		    {"state", i.Details.State},
+		    {"url", i.Details.WebURL},
+		    {"pool_id", string(strconv.Itoa(int(i.Details.Agent.Pool.ID)))},
+		    {"pool_name", i.Details.Agent.Pool.Name},
+		    {"agent_name", i.Details.Agent.Name},
+		    {"agent_id", string(strconv.Itoa(int(i.Details.Agent.ID)))},
+		    }
+	    labelsTitles, labelsValues := []string{}, []string{}
+	    for v := range labels {
+	    	labelsTitles = append(labelsTitles, labels[v].Name)
+	    	labelsValues = append(labelsValues, labels[v].Value)
+	    }
+	    var v float64 = 0.0
+        layout := "20060102T150405-0700"
+        timequeue, _ := time.Parse(layout, i.Details.QueuedDate)
+        timestart, _ := time.Parse(layout, i.Details.StartDate)
+        timefinish, _ := time.Parse(layout, i.Details.FinishDate)
+
+        //итоговое время ожидания в очереди
+        v = timestart.Sub(timequeue).Seconds()
+        title := fmt.Sprint(namespace, "_build_queued_second")
+	    desc := prometheus.NewDesc(title, title, labelsTitles, nil)
+	    metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+
+        //итоговое время работы на агенте
+        v = timefinish.Sub(timestart).Seconds()
+        title = fmt.Sprint(namespace, "_build_finish_second")
+	    desc = prometheus.NewDesc(title, title, labelsTitles, nil)
+	    metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+
 	}
 }
+
+func getBuildStatNew2(wg *sync.WaitGroup, chIn <-chan Build) {
+	defer wg.Done()
+	labels := []Label{}
+	for i := range chIn {
+		title := fmt.Sprint(namespace, "_build_queued_second")
+			labels = []Label{
+        		{"exporter_instance", i.Filter.instance},
+        		{"exporter_filter", i.Filter.Name},
+        		{"build_configuration", string(i.Details.BuildTypeID)},
+        		{"branch", i.Details.BranchName},
+        		{"id", string(strconv.Itoa(int(i.Details.ID)))},
+        	//	{"number", i.Details.Number},
+        		{"state", i.Details.State},
+        	//	{"status", i.Details.Status},
+        		{"url", i.Details.WebURL},
+        		}
+	    labelsTitles, labelsValues := []string{}, []string{}
+	    for v := range labels {
+	    	labelsTitles = append(labelsTitles, labels[v].Name)
+	    	labelsValues = append(labelsValues, labels[v].Value)
+	    }
+	    var v float64 = 0.0
+        layout := "20060102T150405-0700"
+        currentTime := time.Now()
+        timequeue, _ := time.Parse(layout, i.Details.QueuedDate)
+        //timestart, _ := time.Parse(layout, i.Details.StartDate)
+        //timefinish, _ := time.Parse(layout, i.Details.FinishDate)
+
+	    //время ожидания в очереди
+	    v = currentTime.Sub(timequeue).Seconds()
+	    desc := prometheus.NewDesc(title, title, labelsTitles, nil)
+	    metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+	}
+}
+
+func getBuildStatNew3(wg *sync.WaitGroup, chIn <-chan Build) {
+	defer wg.Done()
+	labels := []Label{}
+	for i := range chIn {
+		title := fmt.Sprint(namespace, "_build_finish_second")
+	    labels = []Label{
+		    {"exporter_instance", i.Filter.instance},
+		    {"exporter_filter", i.Filter.Name},
+		    {"build_configuration", string(i.Details.BuildTypeID)},
+		    {"branch", i.Details.BranchName},
+		    {"id", string(strconv.Itoa(int(i.Details.ID)))},
+		    {"number", i.Details.Number},
+		    {"status", i.Details.Status},
+		    {"state", i.Details.State},
+		    {"url", i.Details.WebURL},
+		    {"pool_id", string(strconv.Itoa(int(i.Details.Agent.Pool.ID)))},
+		    {"pool_name", i.Details.Agent.Pool.Name},
+		    {"agent_name", i.Details.Agent.Name},
+		    {"agent_id", string(strconv.Itoa(int(i.Details.Agent.ID)))},
+		    }
+	    labelsTitles, labelsValues := []string{}, []string{}
+	    for v := range labels {
+	    	labelsTitles = append(labelsTitles, labels[v].Name)
+	    	labelsValues = append(labelsValues, labels[v].Value)
+	    }
+	    var v float64 = 0.0
+        layout := "20060102T150405-0700"
+        currentTime := time.Now()
+        timestart, _ := time.Parse(layout, i.Details.StartDate)
+        //timefinish, _ := time.Parse(layout, i.Details.FinishDate)
+
+        //время работы на агенте
+        v = currentTime.Sub(timestart).Seconds()
+	    desc := prometheus.NewDesc(title, title, labelsTitles, nil)
+	    metricsStorage.Set(getHash(title, labelsValues...), prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labelsValues...))
+
+	}
+}
+
+/*
 func getBuildStat(c *tc.Client, wg *sync.WaitGroup, chIn <-chan Build, chOut chan<- BuildStatistics) {
 	defer wg.Done()
 	wg1 := &sync.WaitGroup{}
@@ -284,7 +377,8 @@ func getBuildStat(c *tc.Client, wg *sync.WaitGroup, chIn <-chan Build, chOut cha
 	wg1.Wait()
 	close(chOut)
 }
-
+*/
+/*
 func parseStat(wg *sync.WaitGroup, chIn <-chan BuildStatistics) {
 	defer wg.Done()
 
@@ -325,7 +419,7 @@ func parseStat(wg *sync.WaitGroup, chIn <-chan BuildStatistics) {
 		}
 	}
 }
-
+*/
 func (i *Instance) validateStatus(client *tc.Client) error {
 	req, err := http.NewRequest("GET", i.URL, nil)
 	if err != nil {

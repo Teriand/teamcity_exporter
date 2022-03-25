@@ -1,40 +1,31 @@
 instances:
+#- name: tc-dev
+#  url: https://teamcity.com
+#  username: monitoringrestapi
+#  password: 'Pass'
+#  scrape_interval: 120
+#  concurrency_limit: 5
+#  builds_filters:
+#  - name: dev-filter1
+#    filter:
+#      #build_type: qwe
+#      count: 10
 - name: prod
-  url: https://gwre-devexp-ci-production-devci.gwre-devops.net
-  username: login
-  password: password
-  scrape_interval: 600
-  concurrency_limit: 5
+  url: https://teamcity
+  username: mon
+  password: 'Pass'
+  scrape_interval: 30
+  concurrency_limit: 2
+  #sincedate: '120'
   builds_filters:
-  - name: prod-filter1
+  - name: dev-filter1
     filter:
-      build_type: BillingCenter_Autobuild
-      status: success
-      running: false
-      canceled: false
-  - name: prod-filter2
-    filter:
-      build_type: BillingCenter_DailyTests
-      status: failure
-      running: false
-      canceled: false
-- name: dev
-  url: https://gwre-devexp-ci-poc-kdc-devci.gwre-devops.net
-  username: login
-  password: password
-  scrape_interval: 80
-  concurrency_limit: 10
-- name: test
-  url: https://test.net
-  username: login
-  password: password
-  scrape_interval: 600
-  concurrency_limit: 5
-  builds_filters:
-  - name: prod-filter1
-    filter:
-      #build_type: BillingCenter_Autobuild
-      #status: success
-      #running: false
-      #canceled: false
-      count: 10
+      canceled: any
+      #sincedate: '20211102T114700%2B0300'
+      #build_type: DOS_Checks_CheckPython3
+      count: 99
+      #state: queued
+      #test: qwe
+      #test2: asd]
+    fields: "count,build(id,buildTypeId,number,status,state,webUrl,queuedDate,startDate,finishDate,agent(pool(id,name),id,name))"
+      

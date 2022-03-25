@@ -21,6 +21,7 @@ type BuildFilter struct {
 	Name     string          `yaml:"name"`
 	Filter   tc.BuildLocator `yaml:"filter"`
 	instance string
+	Fields           string        `yaml:"fields"`
 }
 
 type Configuration struct {
